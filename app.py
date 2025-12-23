@@ -81,12 +81,11 @@ and integrity in all business dealings.
 
 
 # ---------------------------------------------------------
-# Structured Answer Function + Source Toggle + Chat History
+# Structured Answer Function (Block Answer Mode)
 # ---------------------------------------------------------
-def answer_question(question, show_sources, history):
+def answer_question(question, show_sources):
     if not question or question.strip() == "":
-        history = history + [[question, "Please enter a valid question."]]
-        return history, history
+        return "Please enter a valid question."
 
     try:
         chain, retriever = load_rag()
@@ -99,28 +98,26 @@ def answer_question(question, show_sources, history):
             answer = FALLBACK_TEXT
 
         # Structured Compliance Format
-        structured = f"""**Key Rule:**  
+        structured = f"""### **Key Rule**  
 {answer.split('.')[0].strip()}.
 
-**Required Action:**  
+### **Required Action**  
 {answer}
 
-**Risk if Ignored:**  
+### **Risk if Ignored**  
 Violating this policy may result in disciplinary action, reputational damage, or legal consequences.
 """
 
         # Optional Source Citations
         if show_sources and sources:
-            structured += "\n\n**Sources Used:**\n"
+            structured += "\n### **Sources Used**\n"
             for i, src in enumerate(sources, start=1):
-                structured += f"- Source {i}: Page {src.metadata.get('page', 'N/A')}\n"
+                structured += f"- Page {src.metadata.get('page', 'N/A')}\n"
 
-        history = history + [[question, structured]]
-        return history, history
+        return structured
 
     except Exception as e:
-        history = history + [[question, f"Error: {str(e)}"]]
-        return history, history
+        return f"Error: {str(e)}"
 
 
 # ---------------------------------------------------------
@@ -148,7 +145,7 @@ def load_question(q):
 
 
 # ---------------------------------------------------------
-# Gradio UI
+# Gradio UI (Block Answer Mode)
 # ---------------------------------------------------------
 with gr.Blocks(
     theme=gr.themes.Soft(
@@ -183,9 +180,6 @@ with gr.Blocks(
         </div>
     """)
 
-    chatbot = gr.Chatbot(label="Conversation History", type="messages")
-    state = gr.State([])
-
     gr.Markdown("Select a question from the list **or** type your own below.")
 
     with gr.Row():
@@ -205,10 +199,12 @@ with gr.Blocks(
 
     ask_button = gr.Button("Ask", variant="primary")
 
+    output_box = gr.Markdown(label="Answer")
+
     ask_button.click(
         answer_question,
-        inputs=[user_input, show_sources, state],
-        outputs=[chatbot, state]
+        inputs=[user_input, show_sources],
+        outputs=output_box
     )
 
 
