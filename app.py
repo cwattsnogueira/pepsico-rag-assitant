@@ -183,7 +183,7 @@ with gr.Blocks(
         </div>
     """)
 
-    chatbot = gr.Chatbot(label="Conversation History")
+    chatbot = gr.Chatbot(label="Conversation History", type="messages")
     state = gr.State([])
 
     gr.Markdown("Select a question from the list **or** type your own below.")
