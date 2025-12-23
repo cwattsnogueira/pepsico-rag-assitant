@@ -1,1 +1,31 @@
-# pepsico-rag-assitant
+# PepsiCo RAG Assistant (Cloud Run Deployment)
+
+This project deploys a Retrieval-Augmented Generation (RAG) assistant
+based on the Pepsi Bottling Group Worldwide Code of Conduct.
+
+##  Deployment Steps
+
+### 1. Upload these files to GitHub:
+- app.py
+- requirements.txt
+- Dockerfile
+- .gcloudignore
+- PBG_English_3_28.pdf
+
+### 2. Create a Cloud Build Trigger
+- Go to Google Cloud Console → Cloud Build → Triggers
+- Connect your GitHub repo
+- Select Dockerfile build
+
+### 3. Deploy to Cloud Run
+- After Cloud Build finishes, go to Cloud Run
+- Click “Create Service”
+- Choose the built container image
+- Set:
+  - Port: 8080
+  - Allow unauthenticated access
+  - Add environment variable:
+    - OPENAI_API_KEY = your_key_here
+
+### 4. Done
+Cloud Run will give you a public URL.
