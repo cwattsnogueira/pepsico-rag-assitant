@@ -24,6 +24,8 @@ def load_rag():
     if qa_chain is not None:
         return qa_chain, retriever
 
+    print(" Checking for PDF:", os.path.exists("PBG_English_3_28.pdf"))
+
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from langchain.chains import RetrievalQA
     from langchain_community.vectorstores import FAISS
@@ -62,6 +64,7 @@ def load_rag():
         return_source_documents=True
     )
 
+    print(" RAG pipeline loaded successfully.")
     return qa_chain, retriever
 
 
@@ -209,4 +212,5 @@ with gr.Blocks(
 # ---------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
+    print(f" Starting Gradio on port {port}")
     demo.launch(server_name="0.0.0.0", server_port=port)
