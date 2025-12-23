@@ -2,6 +2,7 @@ gradio==4.44.0
 langchain==0.2.16
 langchain-community==0.2.16
 langchain-openai==0.1.23
+langchain-text-splitters==0.2.4
 faiss-cpu
 pypdf
 numpy==1.26.4
