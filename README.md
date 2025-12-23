@@ -1,5 +1,7 @@
 # PepsiCo RAG Assistant (Cloud Run Deployment)
 
+![Cloud Run](https://img.shields.io/badge/Deployed%20to-Google%20Cloud%20Run-blue?logo=googlecloud)
+
 This project deploys a Retrieval-Augmented Generation (RAG) assistant
 based on the Pepsi Bottling Group Worldwide Code of Conduct.
 
