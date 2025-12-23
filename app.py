@@ -24,7 +24,7 @@ def load_rag():
     if qa_chain is not None:
         return qa_chain, retriever
 
-    print(" Checking for PDF:", os.path.exists("PBG_English_3_28.pdf"))
+    print("🔍 Checking for PDF:", os.path.exists("PBG_English_3_28.pdf"))
 
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from langchain.chains import RetrievalQA
@@ -64,7 +64,7 @@ def load_rag():
         return_source_documents=True
     )
 
-    print(" RAG pipeline loaded successfully.")
+    print("✅ RAG pipeline loaded successfully.")
     return qa_chain, retriever
 
 
@@ -85,7 +85,8 @@ and integrity in all business dealings.
 # ---------------------------------------------------------
 def answer_question(question, show_sources, history):
     if not question or question.strip() == "":
-        return history + [[question, "Please enter a valid question."]]
+        history = history + [[question, "Please enter a valid question."]]
+        return history, history
 
     try:
         chain, retriever = load_rag()
@@ -115,10 +116,11 @@ Violating this policy may result in disciplinary action, reputational damage, or
                 structured += f"- Source {i}: Page {src.metadata.get('page', 'N/A')}\n"
 
         history = history + [[question, structured]]
-        return history
+        return history, history
 
     except Exception as e:
-        return history + [[question, f"Error: {str(e)}"]]
+        history = history + [[question, f"Error: {str(e)}"]]
+        return history, history
 
 
 # ---------------------------------------------------------
@@ -182,10 +184,13 @@ with gr.Blocks(
     """)
 
     chatbot = gr.Chatbot(label="Conversation History")
+    state = gr.State([])
+
+    gr.Markdown("Select a question from the list **or** type your own below.")
 
     with gr.Row():
         dropdown = gr.Dropdown(
-            EXAMPLE_QUESTIONS,
+            choices=EXAMPLE_QUESTIONS,
             label="Select a Question",
             interactive=True
         )
@@ -202,8 +207,8 @@ with gr.Blocks(
 
     ask_button.click(
         answer_question,
-        inputs=[user_input, show_sources, chatbot],
-        outputs=chatbot
+        inputs=[user_input, show_sources, state],
+        outputs=[chatbot, state]
     )
 
 
@@ -212,5 +217,10 @@ with gr.Blocks(
 # ---------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    print(f" Starting Gradio on port {port}")
-    demo.launch(server_name="0.0.0.0", server_port=port)
+    print(f"🚀 Starting Gradio on port {port}")
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=port,
+        show_api=False,
+        quiet=True,
+    )
