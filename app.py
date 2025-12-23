@@ -10,50 +10,64 @@ if not OPENAI_API_KEY:
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
 # ---------------------------------------------------------
-# LangChain + FAISS RAG Pipeline
+# Lazy RAG Initialization (Fix for Cloud Run startup timeout)
 # ---------------------------------------------------------
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain.chains import RetrievalQA
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+qa_chain = None
+retriever = None
 
-PDF_PATH = "PBG_English_3_28.pdf"   # Must be included in the container
+def load_rag():
+    """
+    Loads the RAG pipeline only on first request.
+    Prevents Cloud Run startup timeout.
+    """
+    global qa_chain, retriever
+    if qa_chain is not None:
+        return qa_chain, retriever
 
-# Load PDF
-loader = PyPDFLoader(PDF_PATH)
-documents = loader.load()
+    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+    from langchain.chains import RetrievalQA
+    from langchain_community.vectorstores import FAISS
+    from langchain_community.document_loaders import PyPDFLoader
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Split into chunks
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=150
-)
-chunks = splitter.split_documents(documents)
+    PDF_PATH = "PBG_English_3_28.pdf"
 
-# Embeddings
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    loader = PyPDFLoader(PDF_PATH)
+    documents = loader.load()
 
-# Build FAISS vectorstore
-vectorstore = FAISS.from_documents(
-    documents=chunks,
-    embedding=embeddings
-)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=150
+    )
+    chunks = splitter.split_documents(documents)
 
-# LLM
-llm = ChatOpenAI(
-    model="gpt-3.5-turbo",
-    temperature=0.2
-)
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
-# Retrieval QA chain
-qa_chain = RetrievalQA.from_chain_type(
-    llm=llm,
-    retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
-    chain_type="stuff"
-)
+    vectorstore = FAISS.from_documents(
+        documents=chunks,
+        embedding=embeddings
+    )
 
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+
+    llm = ChatOpenAI(
+        model="gpt-3.5-turbo",
+        temperature=0.2
+    )
+
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        retriever=retriever,
+        chain_type="stuff",
+        return_source_documents=True
+    )
+
+    return qa_chain, retriever
+
+
+# ---------------------------------------------------------
 # Fallback text
+# ---------------------------------------------------------
 FALLBACK_TEXT = """
 This question may not be explicitly covered in the Pepsi Bottling Group Worldwide Code of Conduct.
 
@@ -62,19 +76,46 @@ conflict-of-interest prevention, accurate reporting, workplace respect, safety,
 and integrity in all business dealings.
 """
 
+
 # ---------------------------------------------------------
-# RAG Answer Function
+# Structured Answer Function + Source Toggle + Chat History
 # ---------------------------------------------------------
-def answer_question(question: str) -> str:
+def answer_question(question, show_sources, history):
     if not question or question.strip() == "":
-        return "Please enter a valid question."
+        return history + [[question, "Please enter a valid question."]]
 
     try:
-        response = qa_chain.invoke({"query": question})
+        chain, retriever = load_rag()
+        response = chain.invoke({"query": question})
+
         answer = response.get("result", "").strip()
-        return answer if answer else FALLBACK_TEXT
+        sources = response.get("source_documents", [])
+
+        if not answer:
+            answer = FALLBACK_TEXT
+
+        # Structured Compliance Format
+        structured = f"""**Key Rule:**  
+{answer.split('.')[0].strip()}.
+
+**Required Action:**  
+{answer}
+
+**Risk if Ignored:**  
+Violating this policy may result in disciplinary action, reputational damage, or legal consequences.
+"""
+
+        # Optional Source Citations
+        if show_sources and sources:
+            structured += "\n\n**Sources Used:**\n"
+            for i, src in enumerate(sources, start=1):
+                structured += f"- Source {i}: Page {src.metadata.get('page', 'N/A')}\n"
+
+        history = history + [[question, structured]]
+        return history
+
     except Exception as e:
-        return f"Error: {str(e)}"
+        return history + [[question, f"Error: {str(e)}"]]
 
 
 # ---------------------------------------------------------
@@ -131,18 +172,13 @@ with gr.Blocks(
     """
 ) as demo:
 
-    gr.HTML(f"""
+    gr.HTML("""
         <div class="pepsico-header">
             PepsiCo Code of Conduct Assistant
         </div>
     """)
 
-    gr.Markdown(
-        """
-        This assistant helps you explore the Pepsi Bottling Group Worldwide Code of Conduct.
-        Select a question or type your own to get a grounded, policy‑aligned answer.
-        """
-    )
+    chatbot = gr.Chatbot(label="Conversation History")
 
     with gr.Row():
         dropdown = gr.Dropdown(
@@ -157,15 +193,15 @@ with gr.Blocks(
 
     dropdown.change(load_question, dropdown, user_input)
 
-    output = gr.Textbox(
-        label="Answer",
-        lines=12
-    )
+    show_sources = gr.Checkbox(label="Show sources", value=False)
 
-    gr.Button(
-        "Ask",
-        variant="primary"
-    ).click(answer_question, user_input, output)
+    ask_button = gr.Button("Ask", variant="primary")
+
+    ask_button.click(
+        answer_question,
+        inputs=[user_input, show_sources, chatbot],
+        outputs=chatbot
+    )
 
 
 # ---------------------------------------------------------
