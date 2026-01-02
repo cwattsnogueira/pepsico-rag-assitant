@@ -31,3 +31,10 @@ based on the Pepsi Bottling Group Worldwide Code of Conduct.
 
 ### 4. Done
 Cloud Run will give you a public URL.
+
+### OpenAI
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.2
+    )
+

@@ -1,19 +1,51 @@
 import os
+import re
 import gradio as gr
 
-
 # Load API Key (Cloud Run environment variable)
-
+# ---------------------------------------------------------
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY environment variable not set.")
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
 
-# Lazy RAG Initialization (for Cloud Run startup timeout)
-
+# Lazy RAG Initialization (Fix for Cloud Run startup timeout)
+# ---------------------------------------------------------
 qa_chain = None
 retriever = None
+
+
+def extract_section_title(text: str) -> str:
+    """
+    Extracts a likely section title from the chunk text using simple heuristics.
+    - Looks for short ALL CAPS lines (common in PDFs for headings).
+    - Also considers simple Title Case lines as possible headings.
+    If no candidate is found, returns a generic label.
+    """
+    lines = text.split("\n")
+    candidates = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # ALL CAPS headings with up to 8 words
+        if stripped.isupper() and len(stripped.split()) <= 8:
+            candidates.append(stripped)
+            continue
+
+        # Title Case headings (e.g., "Conflicts of Interest")
+        if re.match(r"^[A-Z][a-z]+(\s[A-Z][a-z]+)*$", stripped) and len(stripped.split()) <= 8:
+            candidates.append(stripped)
+
+    if candidates:
+        # Return the first detected heading in the chunk
+        return candidates[0]
+
+    return "General Code Guidance"
+
 
 def load_rag():
     """
@@ -24,8 +56,6 @@ def load_rag():
     if qa_chain is not None:
         return qa_chain, retriever
 
-    print("Checking for PDF:", os.path.exists("PepsiCo_Global_Code_of_Conduct.pdf"))
-
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from langchain.chains import RetrievalQA
     from langchain_community.vectorstores import FAISS
@@ -33,58 +63,67 @@ def load_rag():
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
     PDF_PATH = "PepsiCo_Global_Code_of_Conduct.pdf"
+    print("Checking for PDF:", os.path.exists(PDF_PATH))
 
     loader = PyPDFLoader(PDF_PATH)
     documents = loader.load()
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
-        chunk_overlap=150
+        chunk_overlap=150,
     )
     chunks = splitter.split_documents(documents)
+
+    # Attach a best-guess section title to each chunk
+    for chunk in chunks:
+        text = chunk.page_content
+        section = extract_section_title(text)
+        chunk.metadata["section"] = section
 
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
     vectorstore = FAISS.from_documents(
         documents=chunks,
-        embedding=embeddings
+        embedding=embeddings,
     )
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
     llm = ChatOpenAI(
         model="gpt-4o-mini",
-        temperature=0.2
+        temperature=0.2,
     )
 
     qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
         retriever=retriever,
         chain_type="stuff",
-        return_source_documents=True
+        return_source_documents=True,
     )
 
     print("RAG pipeline loaded successfully.")
     return qa_chain, retriever
 
-# Fallback text
 
+# Fallback text
+# ---------------------------------------------------------
 FALLBACK_TEXT = """
 This question may not be explicitly covered in the PepsiCo Global Code of Conduct.
 
 However, the Code emphasizes ethical behavior, legal compliance, anti-bribery and anti-corruption standards,
 conflict-of-interest prevention, accurate reporting, workplace respect, human rights, safety,
 and integrity in all business dealings.
-"""
+""".strip()
+
 
 # Structured Answer Function (Block Answer Mode)
-
+# ---------------------------------------------------------
 def answer_question(question, show_sources):
     if not question or question.strip() == "":
         return "Please enter a valid question."
 
     try:
-        chain, retriever = load_rag()
+        chain, _ = load_rag()
         response = chain.invoke({"query": question})
 
         answer = response.get("result", "").strip()
@@ -108,25 +147,28 @@ Violating this policy may result in disciplinary action, reputational damage, or
         if show_sources and sources:
             structured += "\n### **Sources Used**\n"
             for src in sources:
-                structured += f"- Page {src.metadata.get('page', 'N/A')}\n"
+                section = src.metadata.get("section", "Code of Conduct")
+                structured += f"- Section: {section}\n"
 
         return structured
 
     except Exception as e:
         return f"Error: {str(e)}"
 
-# PepsiCo UI Styling
 
+
+# PepsiCo UI Styling
+# ---------------------------------------------------------
 PRIMARY_BLUE = "#005CB4"
 SECONDARY_RED = "#E41E2B"
 LIGHT_GRAY = "#F5F5F5"
 
 EXAMPLE_QUESTIONS = [
     "What is considered a conflict of interest under the PepsiCo Code?",
-    "How does PepsiCo address bribery and anti-corruption globally?",
     "How do I report a Code of Conduct violation at PepsiCo?",
     "What protections exist for employees who speak up?",    
-    "What is PepsiCo’s policy on accepting gifts or entertainment?",    
+    "What is PepsiCo’s policy on accepting gifts or entertainment?",
+    "How does PepsiCo address bribery and anti-corruption globally?",
     "What are the rules regarding accurate financial reporting?",
     "How does PepsiCo protect human rights in the workplace?",
     "What is the policy on harassment and discrimination?",
@@ -138,8 +180,11 @@ EXAMPLE_QUESTIONS = [
     "How should I respond if a coworker violates the Code?",
 ]
 
+
 def load_question(q):
     return q
+
+
 
 # Gradio UI (Block Answer Mode)
 # ---------------------------------------------------------
@@ -147,7 +192,7 @@ with gr.Blocks(
     theme=gr.themes.Soft(
         primary_hue="blue",
         secondary_hue="red",
-        neutral_hue="gray"
+        neutral_hue="gray",
     ),
     css=f"""
         body {{
@@ -167,14 +212,16 @@ with gr.Blocks(
             max-width: 900px !important;
             margin: auto;
         }}
-    """
+    """,
 ) as demo:
 
-    gr.HTML("""
+    gr.HTML(
+        """
         <div class="pepsico-header">
             PepsiCo Global Code of Conduct Assistant
         </div>
-    """)
+        """
+    )
 
     gr.Markdown("Select a question from the list **or** type your own below.")
 
@@ -182,11 +229,11 @@ with gr.Blocks(
         dropdown = gr.Dropdown(
             choices=EXAMPLE_QUESTIONS,
             label="Select a Question",
-            interactive=True
+            interactive=True,
         )
         user_input = gr.Textbox(
             label="Your Question",
-            placeholder="Type your question or select one above..."
+            placeholder="Type your question or select one above...",
         )
 
     dropdown.change(load_question, dropdown, user_input)
@@ -200,7 +247,7 @@ with gr.Blocks(
     ask_button.click(
         answer_question,
         inputs=[user_input, show_sources],
-        outputs=output_box
+        outputs=output_box,
     )
 
 
