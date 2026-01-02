@@ -2,7 +2,8 @@ import os
 import re
 import gradio as gr
 
-# Load API Key (Cloud Run environment variable)
+
+# Load API Key
 # ---------------------------------------------------------
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
@@ -10,48 +11,55 @@ if not OPENAI_API_KEY:
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
 
-# Lazy RAG Initialization (Fix for Cloud Run startup timeout)
+
+# Lazy RAG Initialization
 # ---------------------------------------------------------
 qa_chain = None
 retriever = None
 
 
+
+# Improved Section Title Extractor
+# ---------------------------------------------------------
 def extract_section_title(text: str) -> str:
     """
-    Extracts a likely section title from the chunk text using simple heuristics.
-    - Looks for short ALL CAPS lines (common in PDFs for headings).
-    - Also considers simple Title Case lines as possible headings.
-    If no candidate is found, returns a generic label.
+    Extracts a meaningful section title using robust heuristics.
+    Avoids garbage like 'Ha', 'F', or partial words.
     """
     lines = text.split("\n")
     candidates = []
 
     for line in lines:
         stripped = line.strip()
-        if not stripped:
+
+        # Skip empty or tiny lines
+        if len(stripped) < 4:
             continue
 
-        # ALL CAPS headings with up to 8 words
-        if stripped.isupper() and len(stripped.split()) <= 8:
+        # Skip lines with punctuation or numbers
+        if re.search(r"[\d\.\,\:\;\(\)]", stripped):
+            continue
+
+        # ALL CAPS headings
+        if stripped.isupper() and 4 <= len(stripped.split()) <= 10:
             candidates.append(stripped)
             continue
 
-        # Title Case headings (e.g., "Conflicts of Interest")
-        if re.match(r"^[A-Z][a-z]+(\s[A-Z][a-z]+)*$", stripped) and len(stripped.split()) <= 8:
+        # Title Case headings
+        if re.match(r"^[A-Z][a-z]+(\s[A-Z][a-z]+)*$", stripped):
             candidates.append(stripped)
 
+    # Prefer the last heading (closest to content)
     if candidates:
-        # Return the first detected heading in the chunk
-        return candidates[0]
+        return candidates[-1]
 
-    return "General Code Guidance"
+    return "Relevant Section of the Code"
 
 
+
+# Load RAG
+# ---------------------------------------------------------
 def load_rag():
-    """
-    Loads the RAG pipeline only on first request.
-    Prevents Cloud Run startup timeout.
-    """
     global qa_chain, retriever
     if qa_chain is not None:
         return qa_chain, retriever
@@ -74,25 +82,17 @@ def load_rag():
     )
     chunks = splitter.split_documents(documents)
 
-    # Attach a best-guess section title to each chunk
+    # Attach section metadata
     for chunk in chunks:
-        text = chunk.page_content
-        section = extract_section_title(text)
+        section = extract_section_title(chunk.page_content)
         chunk.metadata["section"] = section
 
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-
-    vectorstore = FAISS.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-    )
+    vectorstore = FAISS.from_documents(chunks, embeddings)
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.2,
-    )
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
 
     qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
@@ -103,6 +103,7 @@ def load_rag():
 
     print("RAG pipeline loaded successfully.")
     return qa_chain, retriever
+
 
 
 # Fallback text
@@ -116,7 +117,29 @@ and integrity in all business dealings.
 """.strip()
 
 
-# Structured Answer Function (Block Answer Mode)
+
+# Improved Key Rule Extraction
+# ---------------------------------------------------------
+def extract_key_rule(answer: str) -> str:
+    """
+    Extracts the first meaningful rule from the answer.
+    Prefers bullet points. Falls back to first full sentence.
+    """
+    # Look for bullet points
+    bullets = re.findall(r"[-•]\s*(.*)", answer)
+    if bullets:
+        return bullets[0].strip()
+
+    # Fallback: first full sentence
+    sentences = answer.split(".")
+    if sentences:
+        return sentences[0].strip()
+
+    return "Follow the PepsiCo Code of Conduct."
+
+
+
+# Structured Answer Function
 # ---------------------------------------------------------
 def answer_question(question, show_sources):
     if not question or question.strip() == "":
@@ -132,10 +155,10 @@ def answer_question(question, show_sources):
         if not answer:
             answer = FALLBACK_TEXT
 
-        first_sentence = answer.split(".")[0].strip()
+        key_rule = extract_key_rule(answer)
 
         structured = f"""### **Key Rule**
-{first_sentence}.
+{key_rule}
 
 ### **Required Action**
 {answer}
@@ -147,7 +170,7 @@ Violating this policy may result in disciplinary action, reputational damage, or
         if show_sources and sources:
             structured += "\n### **Sources Used**\n"
             for src in sources:
-                section = src.metadata.get("section", "Code of Conduct")
+                section = src.metadata.get("section", "Relevant Section of the Code")
                 structured += f"- Section: {section}\n"
 
         return structured
@@ -157,7 +180,7 @@ Violating this policy may result in disciplinary action, reputational damage, or
 
 
 
-# PepsiCo UI Styling
+# UI Styling
 # ---------------------------------------------------------
 PRIMARY_BLUE = "#005CB4"
 SECONDARY_RED = "#E41E2B"
@@ -186,14 +209,10 @@ def load_question(q):
 
 
 
-# Gradio UI (Block Answer Mode)
+# Gradio UI
 # ---------------------------------------------------------
 with gr.Blocks(
-    theme=gr.themes.Soft(
-        primary_hue="blue",
-        secondary_hue="red",
-        neutral_hue="gray",
-    ),
+    theme=gr.themes.Soft(primary_hue="blue", secondary_hue="red", neutral_hue="gray"),
     css=f"""
         body {{
             background-color: {LIGHT_GRAY};
@@ -215,40 +234,25 @@ with gr.Blocks(
     """,
 ) as demo:
 
-    gr.HTML(
-        """
+    gr.HTML("""
         <div class="pepsico-header">
             PepsiCo Global Code of Conduct Assistant
         </div>
-        """
-    )
+    """)
 
     gr.Markdown("Select a question from the list **or** type your own below.")
 
     with gr.Row():
-        dropdown = gr.Dropdown(
-            choices=EXAMPLE_QUESTIONS,
-            label="Select a Question",
-            interactive=True,
-        )
-        user_input = gr.Textbox(
-            label="Your Question",
-            placeholder="Type your question or select one above...",
-        )
+        dropdown = gr.Dropdown(choices=EXAMPLE_QUESTIONS, label="Select a Question", interactive=True)
+        user_input = gr.Textbox(label="Your Question", placeholder="Type your question or select one above...")
 
     dropdown.change(load_question, dropdown, user_input)
 
     show_sources = gr.Checkbox(label="Show sources", value=False)
-
     ask_button = gr.Button("Ask", variant="primary")
-
     output_box = gr.Markdown(label="Answer")
 
-    ask_button.click(
-        answer_question,
-        inputs=[user_input, show_sources],
-        outputs=output_box,
-    )
+    ask_button.click(answer_question, inputs=[user_input, show_sources], outputs=output_box)
 
 
 
@@ -257,9 +261,4 @@ with gr.Blocks(
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting Gradio on port {port}")
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=port,
-        show_api=False,
-        quiet=True,
-    )
+    demo.launch(server_name="0.0.0.0", server_port=port, show_api=False, quiet=True)
