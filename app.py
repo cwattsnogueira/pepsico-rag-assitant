@@ -93,29 +93,27 @@ def answer_question(question, show_sources):
         if not answer:
             answer = FALLBACK_TEXT
 
-        # Structured Compliance Format
-        structured = f"""### **Key Rule**  
-{answer.split('.')[0].strip()}.
+        first_sentence = answer.split(".")[0].strip()
 
-### **Required Action**  
+        structured = f"""### **Key Rule**
+{first_sentence}.
+
+### **Required Action**
 {answer}
 
-### **Risk if Ignored**  
+### **Risk if Ignored**
 Violating this policy may result in disciplinary action, reputational damage, or legal consequences.
 """
 
-        # Source Citations
         if show_sources and sources:
             structured += "\n### **Sources Used**\n"
-            for i, src in enumerate(sources, start=1):
+            for src in sources:
                 structured += f"- Page {src.metadata.get('page', 'N/A')}\n"
 
         return structured
 
     except Exception as e:
         return f"Error: {str(e)}"
-
-
 
 # PepsiCo UI Styling
 
