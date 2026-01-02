@@ -1,17 +1,17 @@
 import os
 import gradio as gr
 
-# ---------------------------------------------------------
+
 # Load API Key (Cloud Run environment variable)
-# ---------------------------------------------------------
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY environment variable not set.")
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
-# ---------------------------------------------------------
-# Lazy RAG Initialization (Fix for Cloud Run startup timeout)
-# ---------------------------------------------------------
+
+# Lazy RAG Initialization (for Cloud Run startup timeout)
+
 qa_chain = None
 retriever = None
 
@@ -24,7 +24,7 @@ def load_rag():
     if qa_chain is not None:
         return qa_chain, retriever
 
-    print("🔍 Checking for PDF:", os.path.exists("PBG_English_3_28.pdf"))
+    print("Checking for PDF:", os.path.exists("PepsiCo_Global_Code_of_Conduct.pdf"))
 
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from langchain.chains import RetrievalQA
@@ -32,7 +32,7 @@ def load_rag():
     from langchain_community.document_loaders import PyPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-    PDF_PATH = "PBG_English_3_28.pdf"
+    PDF_PATH = "PepsiCo_Global_Code_of_Conduct.pdf"
 
     loader = PyPDFLoader(PDF_PATH)
     documents = loader.load()
@@ -53,7 +53,7 @@ def load_rag():
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
     llm = ChatOpenAI(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         temperature=0.2
     )
 
@@ -64,25 +64,21 @@ def load_rag():
         return_source_documents=True
     )
 
-    print("✅ RAG pipeline loaded successfully.")
+    print("RAG pipeline loaded successfully.")
     return qa_chain, retriever
 
-
-# ---------------------------------------------------------
 # Fallback text
-# ---------------------------------------------------------
-FALLBACK_TEXT = """
-This question may not be explicitly covered in the Pepsi Bottling Group Worldwide Code of Conduct.
 
-However, the Code emphasizes ethical behavior, legal compliance, anti-bribery rules,
-conflict-of-interest prevention, accurate reporting, workplace respect, safety,
+FALLBACK_TEXT = """
+This question may not be explicitly covered in the PepsiCo Global Code of Conduct.
+
+However, the Code emphasizes ethical behavior, legal compliance, anti-bribery and anti-corruption standards,
+conflict-of-interest prevention, accurate reporting, workplace respect, human rights, safety,
 and integrity in all business dealings.
 """
 
-
-# ---------------------------------------------------------
 # Structured Answer Function (Block Answer Mode)
-# ---------------------------------------------------------
+
 def answer_question(question, show_sources):
     if not question or question.strip() == "":
         return "Please enter a valid question."
@@ -97,21 +93,21 @@ def answer_question(question, show_sources):
         if not answer:
             answer = FALLBACK_TEXT
 
-        # Structured Compliance Format
-        structured = f"""### **Key Rule**  
-{answer.split('.')[0].strip()}.
+        first_sentence = answer.split(".")[0].strip()
 
-### **Required Action**  
+        structured = f"""### **Key Rule**
+{first_sentence}.
+
+### **Required Action**
 {answer}
 
-### **Risk if Ignored**  
+### **Risk if Ignored**
 Violating this policy may result in disciplinary action, reputational damage, or legal consequences.
 """
 
-        # Optional Source Citations
         if show_sources and sources:
             structured += "\n### **Sources Used**\n"
-            for i, src in enumerate(sources, start=1):
+            for src in sources:
                 structured += f"- Page {src.metadata.get('page', 'N/A')}\n"
 
         return structured
@@ -119,32 +115,32 @@ Violating this policy may result in disciplinary action, reputational damage, or
     except Exception as e:
         return f"Error: {str(e)}"
 
-
-# ---------------------------------------------------------
 # PepsiCo UI Styling
-# ---------------------------------------------------------
+
 PRIMARY_BLUE = "#005CB4"
 SECONDARY_RED = "#E41E2B"
 LIGHT_GRAY = "#F5F5F5"
 
 EXAMPLE_QUESTIONS = [
-    "What should I do if I suspect an ethics violation?",
-    "How do I report misconduct anonymously?",
-    "What is considered a conflict of interest at PepsiCo?",
-    "What is the policy on accepting gifts from suppliers?",
-    "How does PepsiCo handle bribery and international anti-corruption laws?",
-    "What are the rules for accurate financial reporting?",
-    "What should I do if my supervisor asks me to falsify hours?",
-    "How does PepsiCo protect employees from retaliation?",
-    "What is the policy on dealing with government officials?",
-    "How should I handle a situation where a coworker violates the Code?"
+    "What is considered a conflict of interest under the PepsiCo Code?",
+    "How does PepsiCo address bribery and anti-corruption globally?",
+    "How do I report a Code of Conduct violation at PepsiCo?",
+    "What protections exist for employees who speak up?",    
+    "What is PepsiCo’s policy on accepting gifts or entertainment?",    
+    "What are the rules regarding accurate financial reporting?",
+    "How does PepsiCo protect human rights in the workplace?",
+    "What is the policy on harassment and discrimination?",
+    "How should employees use social media responsibly?",
+    "What are PepsiCo’s expectations regarding data privacy and confidential information?",
+    "What should I do if I witness unsafe behavior in the workplace?",
+    "How does PepsiCo handle environmental sustainability responsibilities?",
+    "What is the policy on interacting with government officials?",
+    "How should I respond if a coworker violates the Code?",
 ]
 
 def load_question(q):
     return q
 
-
-# ---------------------------------------------------------
 # Gradio UI (Block Answer Mode)
 # ---------------------------------------------------------
 with gr.Blocks(
@@ -176,7 +172,7 @@ with gr.Blocks(
 
     gr.HTML("""
         <div class="pepsico-header">
-            PepsiCo Code of Conduct Assistant
+            PepsiCo Global Code of Conduct Assistant
         </div>
     """)
 
@@ -208,12 +204,12 @@ with gr.Blocks(
     )
 
 
-# ---------------------------------------------------------
+
 # Cloud Run Port Logic
 # ---------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    print(f"🚀 Starting Gradio on port {port}")
+    print(f"Starting Gradio on port {port}")
     demo.launch(
         server_name="0.0.0.0",
         server_port=port,

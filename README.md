@@ -12,7 +12,7 @@ based on the Pepsi Bottling Group Worldwide Code of Conduct.
 - requirements.txt
 - Dockerfile
 - .gcloudignore
-- PBG_English_3_28.pdf
+- PepsiCo_Global_Code_of_Conduct.pdf
 
 ### 2. Create a Cloud Build Trigger
 - Go to Google Cloud Console → Cloud Build → Triggers
