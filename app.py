@@ -3,14 +3,14 @@ import re
 import gradio as gr
 
 # Load API Key
-# ---------------------------------------------------------
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY environment variable not set.")
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
 # Official PepsiCo Section Hierarchy (exact titles)
-# ---------------------------------------------------------
+
 SECTION_HIERARCHY = {
     "Introduction": [
         "Our Mission and Vision",
@@ -77,7 +77,7 @@ SECTION_HIERARCHY = {
     ],
 }
 
-# Build child -> parent mapping
+# Build child -> parent mapping and set of all titles
 CHILD_TO_PARENT = {}
 ALL_TITLES = set()
 
@@ -88,8 +88,14 @@ for parent, children in SECTION_HIERARCHY.items():
         CHILD_TO_PARENT[child] = parent
         ALL_TITLES.add(child)
 
+# Caches to reduce LLM calls
+
+KEY_RULE_CACHE = {}    # key: answer str -> value: key_rule str
+SUMMARY_CACHE = {}     # key: answer str -> value: summary str
+
+
 # Match chunk to closest section title
-# ---------------------------------------------------------
+
 def match_section_titles(text: str):
     text_lower = text.lower()
     best_title = None
@@ -115,13 +121,13 @@ def match_section_titles(text: str):
         return parent, best_title
     return best_title, None
 
-# Classify question as POLICY or INFORMATION
-# ---------------------------------------------------------
+# Classify question as POLICY or INFORMATIVE
+
 POLICY_KEYWORDS = [
     "policy", "rule", "allowed", "not allowed", "conflict",
     "harassment", "discrimination", "bribery", "gifts",
     "report", "violation", "safety", "compliance",
-    "responsibilities", "should I", "must I", "required",
+    "responsibilities", "should i", "must i", "required",
 ]
 
 INFORMATIVE_KEYWORDS = [
@@ -129,6 +135,7 @@ INFORMATIVE_KEYWORDS = [
     "describe", "meaning", "pep+", "hotline", "foundation",
     "inclusion", "speak up", "our consumers", "our suppliers",
 ]
+
 
 def classify_question(q: str) -> str:
     q_lower = q.lower()
@@ -139,12 +146,22 @@ def classify_question(q: str) -> str:
     if any(k in q_lower for k in INFORMATIVE_KEYWORDS):
         return "informative"
 
+    # Default: safer to treat as informative
     return "informative"
 
 # Lazy RAG Initialization
-# ---------------------------------------------------------
+
 qa_chain = None
 retriever = None
+SUMMARY_LLM = None  # shared for summary and key rule
+
+
+def get_summary_llm():
+    global SUMMARY_LLM
+    if SUMMARY_LLM is None:
+        from langchain_openai import ChatOpenAI
+        SUMMARY_LLM = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    return SUMMARY_LLM
 
 
 def load_rag():
@@ -185,67 +202,91 @@ def load_rag():
     )
 
     return qa_chain, retriever
+    
 
-# Extract Key Rule (bullet-first)
-# ---------------------------------------------------------
-def extract_key_rule(answer: str) -> str:
-    for line in answer.splitlines():
-        m = re.match(r"\s*(?:[-•*]|\d+[.)-])\s+(.*\S)", line)
-        if m:
-            rule = m.group(1).strip()
-            if not rule.endswith("."):
-                rule += "."
-            return rule
+# Generate Key Rule (using LLM + cache)
+def get_key_rule(answer: str) -> str:
+    if not answer.strip():
+        return "Follow the PepsiCo Global Code of Conduct."
 
-    sentences = re.split(r"(?<=[.!?])\s+", answer)
-    if sentences:
-        rule = sentences[0].strip()
-        if not rule.endswith("."):
-            rule += "."
-        return rule
+    if answer in KEY_RULE_CACHE:
+        return KEY_RULE_CACHE[answer]
 
-    return "Follow the PepsiCo Global Code of Conduct."
+    llm = get_summary_llm()
+    prompt = f"""
+    Summarize the core rule from the following text in one short, direct sentence.
+    Do NOT list multiple items. Do NOT include examples.
+    Answer as a clear rule starting with a verb (e.g., "Disclose...", "Avoid...", "Do not...").
+    Text:
+    {answer}
+    """
+    resp = llm.invoke(prompt)
+    rule = resp.content.strip()
+    if not rule.endswith((".", "!", "?")):
+        rule += "."
+    KEY_RULE_CACHE[answer] = rule
+    return rule
+    
+# Generate Summary (using LLM + cache)
+def get_summary(answer: str) -> str:
+    if not answer.strip():
+        return "This topic is described in the PepsiCo Global Code of Conduct."
 
-# Build Policy Answer
-# ---------------------------------------------------------
-def build_policy_answer(answer: str, sources):
-    key_rule = extract_key_rule(answer)
+    if answer in SUMMARY_CACHE:
+        return SUMMARY_CACHE[answer]
+
+    llm = get_summary_llm()
+    prompt = f"""
+    Summarize the following text in one short, high-level sentence.
+    Do NOT repeat all details. Focus on the main idea.
+    Text:
+    {answer}
+    """
+    resp = llm.invoke(prompt)
+    summary = resp.content.strip()
+    if not summary.endswith((".", "!", "?")):
+        summary += "."
+    SUMMARY_CACHE[answer] = summary
+    return summary
+
+    
+# Build Policy Answer (Key Rule + Required Action)
+def build_policy_answer(answer: str, sources, show_sources: bool) -> str:
+    key_rule = get_key_rule(answer)
 
     out = f"""### **Key Rule**
 {key_rule}
 
 ### **Required Action**
 {answer}
-
-### **Sources Used**
-PepsiCo Global Code of Conduct
 """
 
-    seen = set()
-    for src in sources:
-        parent = src.metadata.get("parent_section")
-        child = src.metadata.get("child_section")
+    if show_sources:
+        out += "\n### **Sources Used**\n"
+        out += "PepsiCo Global Code of Conduct\n"
 
-        key = (parent, child)
-        if key in seen:
-            continue
-        seen.add(key)
+        seen = set()
+        for src in sources or []:
+            parent = src.metadata.get("parent_section")
+            child = src.metadata.get("child_section")
+            key = (parent, child)
+            if key in seen:
+                continue
+            seen.add(key)
 
-        if parent and child:
-            out += f"- {parent} → {child}\n"
-        elif parent:
-            out += f"- {parent}\n"
-        else:
-            out += "- Relevant Section of the Code\n"
+            if parent and child:
+                out += f"- {parent} → {child}\n"
+            elif parent:
+                out += f"- {parent}\n"
+            else:
+                out += "- Relevant Section of the Code\n"
 
     return out
 
-# Build Informative Answer
-# ---------------------------------------------------------
-def build_informative_answer(answer: str, sources):
-    sentences = re.split(r"(?<=[.!?])\s+", answer)
-    summary = sentences[0].strip()
 
+# Build Informative Answer (Summary + Details)
+def build_informative_answer(answer: str, sources, show_sources: bool) -> str:
+    summary = get_summary(answer)
     details = answer
 
     out = f"""### **Summary**
@@ -253,34 +294,42 @@ def build_informative_answer(answer: str, sources):
 
 ### **Details**
 {details}
-
-### **Sources Used**
-PepsiCo Global Code of Conduct
 """
 
-    seen = set()
-    for src in sources:
-        parent = src.metadata.get("parent_section")
-        child = src.metadata.get("child_section")
+    if show_sources:
+        out += "\n### **Sources Used**\n"
+        out += "PepsiCo Global Code of Conduct\n"
 
-        key = (parent, child)
-        if key in seen:
-            continue
-        seen.add(key)
+        seen = set()
+        for src in sources or []:
+            parent = src.metadata.get("parent_section")
+            child = src.metadata.get("child_section")
+            key = (parent, child)
+            if key in seen:
+                continue
+            seen.add(key)
 
-        if parent and child:
-            out += f"- {parent} → {child}\n"
-        elif parent:
-            out += f"- {parent}\n"
-        else:
-            out += "- Relevant Section of the Code\n"
+            if parent and child:
+                out += f"- {parent} → {child}\n"
+            elif parent:
+                out += f"- {parent}\n"
+            else:
+                out += "- Relevant Section of the Code\n"
 
     return out
 
 # Main Answer Function
-# ---------------------------------------------------------
+FALLBACK_TEXT = """
+This question may not be explicitly covered in the PepsiCo Global Code of Conduct.
+
+However, the Code emphasizes ethical behavior, legal compliance, anti-bribery and anti-corruption standards,
+conflict-of-interest prevention, accurate reporting, workplace respect, human rights, safety,
+and integrity in all business dealings.
+""".strip()
+
+
 def answer_question(question, show_sources):
-    if not question.strip():
+    if not question or not question.strip():
         return "Please enter a valid question."
 
     chain, _ = load_rag()
@@ -289,15 +338,17 @@ def answer_question(question, show_sources):
     answer = response.get("result", "").strip()
     sources = response.get("source_documents", [])
 
+    if not answer:
+        answer = FALLBACK_TEXT
+
     qtype = classify_question(question)
 
     if qtype == "policy":
-        return build_policy_answer(answer, sources)
+        return build_policy_answer(answer, sources, show_sources)
 
-    return build_informative_answer(answer, sources)
+    return build_informative_answer(answer, sources, show_sources)
 
-# UI Styling
-# ---------------------------------------------------------
+# UI Styling and Question Lists
 PRIMARY_BLUE = "#005CB4"
 SECONDARY_RED = "#E41E2B"
 LIGHT_GRAY = "#F5F5F5"
@@ -330,7 +381,6 @@ def load_question(q):
     return q
 
 # Gradio UI
-# ---------------------------------------------------------
 with gr.Blocks(
     theme=gr.themes.Soft(primary_hue="blue", secondary_hue="red", neutral_hue="gray"),
     css=f"""
@@ -360,7 +410,7 @@ with gr.Blocks(
         </div>
     """)
 
-    gr.Markdown("Choose a suggested question or type your own.")
+    gr.Markdown("Choose from suggested questions or type your own below.")
 
     with gr.Row():
         dropdown_info = gr.Dropdown(
@@ -386,12 +436,16 @@ with gr.Blocks(
     ask_button = gr.Button("Ask", variant="primary")
     output_box = gr.Markdown(label="Answer")
 
-    ask_button.click(answer_question, inputs=[user_input, show_sources], outputs=output_box)
+    ask_button.click(
+        answer_question,
+        inputs=[user_input, show_sources],
+        outputs=output_box,
+    )
 
 # Cloud Run Port Logic
-# ---------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
+    print(f"Starting Gradio on port {port}")
     demo.launch(
         server_name="0.0.0.0",
         server_port=port,
