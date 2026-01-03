@@ -291,7 +291,7 @@ SECONDARY_RED = "#E41E2B"
 LIGHT_GRAY = "#F5F5F5"
 
 EXAMPLE_QUESTIONS = [
-    "Pepsico Mission and Vision"
+    "Pepsico Mission and Vision",
     "What is considered a conflict of interest under the PepsiCo Code?",
     "How do I report a Code of Conduct violation at PepsiCo?",
     "What protections exist for employees who speak up?",
