@@ -9,7 +9,7 @@ if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY environment variable not set.")
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
-# Section hierarchy (exact titles from the PepsiCo PDF)
+# Official PepsiCo Section Hierarchy (exact titles)
 # ---------------------------------------------------------
 SECTION_HIERARCHY = {
     "Introduction": [
@@ -77,9 +77,7 @@ SECTION_HIERARCHY = {
     ],
 }
 
-PARENT_SECTIONS = list(SECTION_HIERARCHY.keys())
-
-# Build child -> parent mapping, and include parents mapping to themselves
+# Build child -> parent mapping
 CHILD_TO_PARENT = {}
 ALL_TITLES = set()
 
@@ -90,28 +88,20 @@ for parent, children in SECTION_HIERARCHY.items():
         CHILD_TO_PARENT[child] = parent
         ALL_TITLES.add(child)
 
-# Match chunk to closest section title 
+# Match chunk to closest section title
 # ---------------------------------------------------------
 def match_section_titles(text: str):
-    """
-    Returns (parent_section, child_section or None) based on keyword overlap
-    with the known section titles from the official hierarchy.
-    """
     text_lower = text.lower()
-    if not text_lower.strip():
-        return None, None
-
     best_title = None
     best_score = 0
 
     for title in ALL_TITLES:
         title_lower = title.lower()
-        title_words = set(title_lower.split())
-        overlap = sum(1 for w in title_words if w in text_lower)
+        words = title_lower.split()
+        overlap = sum(1 for w in words if w in text_lower)
 
-        # Prefer exact phrase matches slightly
         if title_lower in text_lower:
-            overlap += len(title_words)
+            overlap += len(words)
 
         if overlap > best_score:
             best_score = overlap
@@ -122,11 +112,34 @@ def match_section_titles(text: str):
 
     parent = CHILD_TO_PARENT.get(best_title)
     if parent and best_title in SECTION_HIERARCHY.get(parent, []):
-        # best_title is a child
         return parent, best_title
-    else:
-        # best_title is a parent
-        return best_title, None
+    return best_title, None
+
+# Classify question as POLICY or INFORMATION
+# ---------------------------------------------------------
+POLICY_KEYWORDS = [
+    "policy", "rule", "allowed", "not allowed", "conflict",
+    "harassment", "discrimination", "bribery", "gifts",
+    "report", "violation", "safety", "compliance",
+    "responsibilities", "should I", "must I", "required",
+]
+
+INFORMATIVE_KEYWORDS = [
+    "mission", "vision", "values", "what is", "explain",
+    "describe", "meaning", "pep+", "hotline", "foundation",
+    "inclusion", "speak up", "our consumers", "our suppliers",
+]
+
+def classify_question(q: str) -> str:
+    q_lower = q.lower()
+
+    if any(k in q_lower for k in POLICY_KEYWORDS):
+        return "policy"
+
+    if any(k in q_lower for k in INFORMATIVE_KEYWORDS):
+        return "informative"
+
+    return "informative"
 
 # Lazy RAG Initialization
 # ---------------------------------------------------------
@@ -145,17 +158,12 @@ def load_rag():
     from langchain_community.document_loaders import PyPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-    PDF_PATH = "PepsiCo_Global_Code_of_Conduct.pdf"
-    loader = PyPDFLoader(PDF_PATH)
+    loader = PyPDFLoader("PepsiCo_Global_Code_of_Conduct.pdf")
     documents = loader.load()
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=150,
-    )
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_documents(documents)
 
-    # Attach parent/child section metadata
     for chunk in chunks:
         parent, child = match_section_titles(chunk.page_content)
         if parent:
@@ -169,9 +177,7 @@ def load_rag():
 
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
 
-    from langchain.chains import RetrievalQA as LC_RetrievalQA
-
-    qa_chain = LC_RetrievalQA.from_chain_type(
+    qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
         retriever=retriever,
         chain_type="stuff",
@@ -180,109 +186,115 @@ def load_rag():
 
     return qa_chain, retriever
 
-# Fallback Text
-# ---------------------------------------------------------
-FALLBACK_TEXT = """
-This question may not be explicitly covered in the PepsiCo Global Code of Conduct.
-
-However, the Code emphasizes ethical behavior, legal compliance, anti-bribery and anti-corruption standards,
-conflict-of-interest prevention, accurate reporting, workplace respect, human rights, safety,
-and integrity in all business dealings.
-""".strip()
-
-# Extract Key Rule (bullet-first, always ends with a period)
+# Extract Key Rule (bullet-first)
 # ---------------------------------------------------------
 def extract_key_rule(answer: str) -> str:
-    """
-    Extracts the first meaningful rule from the answer.
-    Priority:
-      1) First bullet/numbered item.
-      2) First full sentence.
-    Ensures the result ends with a period.
-    """
-
-    # 1) Try to extract from bullet/numbered lines
-    lines = answer.splitlines()
-    for line in lines:
+    for line in answer.splitlines():
         m = re.match(r"\s*(?:[-•*]|\d+[.)-])\s+(.*\S)", line)
         if m:
             rule = m.group(1).strip()
-            if not rule.endswith((".", "!", "?")):
+            if not rule.endswith("."):
                 rule += "."
             return rule
 
-    # 2) Fallback: first full sentence
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", answer) if s.strip()]
+    sentences = re.split(r"(?<=[.!?])\s+", answer)
     if sentences:
-        rule = sentences[0]
-        if not rule.endswith((".", "!", "?")):
+        rule = sentences[0].strip()
+        if not rule.endswith("."):
             rule += "."
         return rule
 
     return "Follow the PepsiCo Global Code of Conduct."
 
-
-
-# Structured Answer Function
+# Build Policy Answer
 # ---------------------------------------------------------
-def answer_question(question, show_sources):
-    if not question or question.strip() == "":
-        return "Please enter a valid question."
+def build_policy_answer(answer: str, sources):
+    key_rule = extract_key_rule(answer)
 
-    try:
-        chain, _ = load_rag()
-        response = chain.invoke({"query": question})
-
-        answer = response.get("result", "").strip()
-        sources = response.get("source_documents", [])
-
-        if not answer:
-            answer = FALLBACK_TEXT
-
-        key_rule = extract_key_rule(answer)
-
-        structured = f"""### **Key Rule**
+    out = f"""### **Key Rule**
 {key_rule}
 
 ### **Required Action**
 {answer}
 
-### **Risk if Ignored**
-Violating this policy may result in disciplinary action, reputational damage, or legal consequences.
+### **Sources Used**
+PepsiCo Global Code of Conduct
 """
 
-        if show_sources and sources:
-            structured += "\n### **Sources Used**\n"
-            structured += "PepsiCo Global Code of Conduct\n"
+    seen = set()
+    for src in sources:
+        parent = src.metadata.get("parent_section")
+        child = src.metadata.get("child_section")
 
-            seen = set()
-            for src in sources:
-                parent = src.metadata.get("parent_section")
-                child = src.metadata.get("child_section")
+        key = (parent, child)
+        if key in seen:
+            continue
+        seen.add(key)
 
-                if not parent and not child:
-                    key = ("Relevant Section of the Code", None)
-                    if key not in seen:
-                        structured += "- Relevant Section of the Code\n"
-                        seen.add(key)
-                    continue
+        if parent and child:
+            out += f"- {parent} → {child}\n"
+        elif parent:
+            out += f"- {parent}\n"
+        else:
+            out += "- Relevant Section of the Code\n"
 
-                key = (parent, child)
-                if key in seen:
-                    continue
-                seen.add(key)
+    return out
 
-                if parent and child:
-                    structured += f"- {parent} \u2192 {child}\n"
-                elif parent:
-                    structured += f"- {parent}\n"
-                else:
-                    structured += "- Relevant Section of the Code\n"
+# Build Informative Answer
+# ---------------------------------------------------------
+def build_informative_answer(answer: str, sources):
+    sentences = re.split(r"(?<=[.!?])\s+", answer)
+    summary = sentences[0].strip()
 
-        return structured
+    details = answer
 
-    except Exception as e:
-        return f"Error: {str(e)}"
+    out = f"""### **Summary**
+{summary}
+
+### **Details**
+{details}
+
+### **Sources Used**
+PepsiCo Global Code of Conduct
+"""
+
+    seen = set()
+    for src in sources:
+        parent = src.metadata.get("parent_section")
+        child = src.metadata.get("child_section")
+
+        key = (parent, child)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if parent and child:
+            out += f"- {parent} → {child}\n"
+        elif parent:
+            out += f"- {parent}\n"
+        else:
+            out += "- Relevant Section of the Code\n"
+
+    return out
+
+# Main Answer Function
+# ---------------------------------------------------------
+def answer_question(question, show_sources):
+    if not question.strip():
+        return "Please enter a valid question."
+
+    chain, _ = load_rag()
+    response = chain.invoke({"query": question})
+
+    answer = response.get("result", "").strip()
+    sources = response.get("source_documents", [])
+
+    qtype = classify_question(question)
+
+    if qtype == "policy":
+        return build_policy_answer(answer, sources)
+
+    return build_informative_answer(answer, sources)
 
 # UI Styling
 # ---------------------------------------------------------
@@ -290,21 +302,25 @@ PRIMARY_BLUE = "#005CB4"
 SECONDARY_RED = "#E41E2B"
 LIGHT_GRAY = "#F5F5F5"
 
-EXAMPLE_QUESTIONS = [
-    "Pepsico Mission and Vision",
+INFORMATIVE_QUESTIONS = [
+    "PepsiCo Mission and Vision",
+    "What is pep+?",
+    "What is the Speak Up Hotline?",
+    "What is Inclusion for Growth?",
+    "What is the PepsiCo Foundation?",
+]
+
+POLICY_QUESTIONS = [
     "What is considered a conflict of interest under the PepsiCo Code?",
     "How do I report a Code of Conduct violation at PepsiCo?",
     "What protections exist for employees who speak up?",
-    "What is considered a conflict of interest under the PepsiCo Code?",
     "What is PepsiCo’s policy on accepting gifts or entertainment?",
     "How does PepsiCo address bribery and anti-corruption globally?",
     "What are the rules regarding accurate financial reporting?",
-    "How does PepsiCo protect human rights in the workplace?",
     "What is the policy on harassment and discrimination?",
     "How should employees use social media responsibly?",
     "What are PepsiCo’s expectations regarding data privacy and confidential information?",
     "What should I do if I witness unsafe behavior in the workplace?",
-    "How does PepsiCo handle environmental sustainability responsibilities?",
     "What is the policy on interacting with government officials?",
     "How should I respond if a coworker violates the Code?",
 ]
@@ -338,45 +354,44 @@ with gr.Blocks(
     """,
 ) as demo:
 
-    gr.HTML(
-        """
+    gr.HTML("""
         <div class="pepsico-header">
             PepsiCo Global Code of Conduct Assistant
         </div>
-        """
-    )
+    """)
 
-    gr.Markdown("Select a question from the list **or** type your own below.")
+    gr.Markdown("Choose a suggested question or type your own.")
 
     with gr.Row():
-        dropdown = gr.Dropdown(
-            choices=EXAMPLE_QUESTIONS,
-            label="Select a Question",
+        dropdown_info = gr.Dropdown(
+            choices=INFORMATIVE_QUESTIONS,
+            label="Select a Question (Informative)",
             interactive=True,
         )
-        user_input = gr.Textbox(
-            label="Your Question",
-            placeholder="Type your question or select one above...",
+        dropdown_policy = gr.Dropdown(
+            choices=POLICY_QUESTIONS,
+            label="Select a Question (Policy)",
+            interactive=True,
         )
 
-    dropdown.change(load_question, dropdown, user_input)
+    user_input = gr.Textbox(
+        label="Your Question",
+        placeholder="Type your question here...",
+    )
 
-    show_sources = gr.Checkbox(label="Show sources", value=False)
+    dropdown_info.change(load_question, dropdown_info, user_input)
+    dropdown_policy.change(load_question, dropdown_policy, user_input)
+
+    show_sources = gr.Checkbox(label="Show sources", value=True)
     ask_button = gr.Button("Ask", variant="primary")
     output_box = gr.Markdown(label="Answer")
 
-    ask_button.click(
-        answer_question,
-        inputs=[user_input, show_sources],
-        outputs=output_box,
-    )
-
+    ask_button.click(answer_question, inputs=[user_input, show_sources], outputs=output_box)
 
 # Cloud Run Port Logic
 # ---------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    print(f"Starting Gradio on port {port}")
     demo.launch(
         server_name="0.0.0.0",
         server_port=port,
