@@ -406,7 +406,7 @@ with gr.Blocks(
 
     gr.HTML("""
         <div class="pepsico-header">
-            PepsiCo Global Code of Conduct Assistant
+            PepsiCo Global Code of Conduct Assistant (Use‑Case Prototype)
         </div>
     """)
 
